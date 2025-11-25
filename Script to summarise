@@ -1,0 +1,338 @@
+function generateExitDataSummary() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var zohoSheet = ss.getSheetByName("Zoho Exit Dump");
+  var mainSheet = ss.getSheetByName("Main");
+  var midCycleSheet = ss.getSheetByName("Mid Cycle");
+  var recoverySheet = ss.getSheetByName("Recovery");
+  var recoveryPaidSheet = ss.getSheetByName("Recovery paid");
+
+  if (!zohoSheet || !mainSheet || !midCycleSheet || !recoverySheet || !recoveryPaidSheet) {
+    throw new Error("One or more required sheets are missing. Required: 'Zoho Exit Dump', 'Main', 'Mid Cycle', 'Recovery', 'Recovery paid'.");
+  }
+
+  var baseName = "Exit Data Summary and Analytics";
+  var summarySheet = createNewSummarySheet_(ss, baseName);
+
+  // ---------------------------
+  // 1) Read data from source tabs
+  // ---------------------------
+
+  // Zoho Exit Dump (Tab 1)
+  var zohoLastRow = zohoSheet.getLastRow();
+  if (zohoLastRow <= 1) {
+    summarySheet.getRange(1, 1).setValue("No data in Zoho Exit Dump.");
+    return;
+  }
+  // Read columns A..CC (81 columns) from row 2 downwards
+  var zohoData = zohoSheet.getRange(2, 1, zohoLastRow - 1, 81).getValues();
+
+  // Main (Tab 2) – need Ecode (Col B) and Status (Col AA)
+  var mainLastRow = mainSheet.getLastRow();
+  var mainData = [];
+  if (mainLastRow > 1) {
+    mainData = mainSheet.getRange(2, 1, mainLastRow - 1, 27).getValues(); // up to AA
+  }
+
+  // Mid Cycle (Tab 3) – Ecode in Col A
+  var midCycleLastRow = midCycleSheet.getLastRow();
+  var midCycleData = [];
+  if (midCycleLastRow > 1) {
+    midCycleData = midCycleSheet.getRange(2, 1, midCycleLastRow - 1, 1).getValues();
+  }
+
+  // Recovery (Tab 5) – Ecode in Col A, Amount in Col C
+  var recoveryLastRow = recoverySheet.getLastRow();
+  var recoveryData = [];
+  if (recoveryLastRow > 1) {
+    recoveryData = recoverySheet.getRange(2, 1, recoveryLastRow - 1, 3).getValues();
+  }
+
+  // Recovery paid (Tab 6) – Ecode in Col A
+  var recPaidLastRow = recoveryPaidSheet.getLastRow();
+  var recPaidData = [];
+  if (recPaidLastRow > 1) {
+    recPaidData = recoveryPaidSheet.getRange(2, 1, recPaidLastRow - 1, 1).getValues();
+  }
+
+  // ---------------------------
+  // 2) Build lookup maps
+  // ---------------------------
+
+  // Main map: Ecode -> statusAA
+  var mainMap = {};
+  for (var i = 0; i < mainData.length; i++) {
+    var ecodeMain = mainData[i][1]; // Col B (index 1)
+    var statusAA = mainData[i][26]; // Col AA (index 26 from A)
+    if (ecodeMain) {
+      mainMap[String(ecodeMain).trim()] = String(statusAA || "").trim();
+    }
+  }
+
+  // Mid Cycle map: Ecode -> true
+  var midMap = {};
+  for (var j = 0; j < midCycleData.length; j++) {
+    var ecodeMid = midCycleData[j][0]; // Col A
+    if (ecodeMid) {
+      midMap[String(ecodeMid).trim()] = true;
+    }
+  }
+
+  // Recovery map: Ecode -> amount (Col C)
+  var recoveryMap = {};
+  for (var k = 0; k < recoveryData.length; k++) {
+    var ecodeRec = recoveryData[k][0]; // Col A
+    var amountRec = recoveryData[k][2]; // Col C
+    if (ecodeRec) {
+      recoveryMap[String(ecodeRec).trim()] = amountRec;
+    }
+  }
+
+  // Recovery paid map: Ecode -> true
+  var recPaidMap = {};
+  for (var m = 0; m < recPaidData.length; m++) {
+    var ecodePaid = recPaidData[m][0]; // Col A
+    if (ecodePaid) {
+      recPaidMap[String(ecodePaid).trim()] = true;
+    }
+  }
+
+  // ---------------------------
+  // 3) Prepare header row on summary sheet
+  // ---------------------------
+
+  var headers = [
+    "E-Code",                           // A
+    "Full Name",                        // B
+    "Email",                            // C
+    "Exit Raised on",                   // D
+    "Entity",                           // E
+    "LOB",                              // F
+    "Department",                       // G
+    "Exit Accepted/Rejected/Pending",   // H
+    "Last Working Day",                 // I
+    "Notice Period",                    // J
+    "FnF Cycle Started?",               // K
+    "FnF Released & Cleared",           // L
+    "FnF on Hold (Asset Submission Due)", // M
+    "Exit Process Complete",            // N
+    "Exit Process Pending",             // O
+    "Recovery Amount",                  // P
+    "",                                 // Q (intentionally left blank)
+    "Recovery Received?"                // R
+  ];
+
+  summarySheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  // ---------------------------
+  // 4) Process each row from Zoho Exit Dump
+  // ---------------------------
+
+  var output = [];
+  var tz = Session.getScriptTimeZone();
+
+  for (var r = 0; r < zohoData.length; r++) {
+    var row = zohoData[r];
+
+    var ecode = row[2];   // Col C
+    if (!ecode) {
+      // Skip rows without e-code
+      continue;
+    }
+    var ecodeStr = String(ecode).trim();
+
+    var exitRaisedRaw = row[1];  // Col B (Exit Raised on, date+time)
+    var fullName = row[3];       // Col D
+    var email = row[4];          // Col E
+    var dept = row[8];           // Col I
+    var lob = row[9];            // Col J
+    var entity = row[10];        // Col K
+    var lastWorkingRaw = row[13]; // Col N (Last Working Day)
+    var statusCC = row[80];       // Col CC (Approved/Rejected/etc)
+
+    // --- D: Exit Raised on (date only) ---
+    var exitRaisedDate = normalizeDate_(exitRaisedRaw);
+    var exitRaisedValue = exitRaisedDate || ""; // store as Date object or blank
+
+    // --- H: Exit Accepted/Rejected/Pending/N/A ---
+    var hVal;
+    var statusStr = String(statusCC || "").trim();
+    if (statusStr === "Approved") {
+      hVal = "Accepted";
+    } else if (statusStr === "Rejected") {
+      hVal = "Rejected";
+    } else if (statusStr === "") {
+      hVal = "Pending";
+    } else {
+      hVal = "N/A";
+    }
+
+    // --- I: Last Working Day ---
+    var lastWorkingDate = normalizeDate_(lastWorkingRaw);
+    var iVal = lastWorkingDate || "";
+
+    // --- J: Notice Period (inclusive days) ---
+    var jVal;
+    if (exitRaisedDate && lastWorkingDate) {
+      var diffMs = lastWorkingDate.getTime() - exitRaisedDate.getTime();
+      var diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1; // inclusive
+      jVal = diffDays;
+    } else {
+      jVal = "N/A";
+    }
+
+    // --- K: FnF Cycle Started? ---
+    var kVal = lastWorkingDate ? "Yes" : "No";
+
+    // --- L & M: FnF Released & Cleared / FnF on Hold ---
+    var mainStatusAA = mainMap[ecodeStr]; // may be undefined
+
+    var lVal; // FnF Released & Cleared
+    var mVal; // FnF on Hold (Asset Submission Due)
+
+    if (mainStatusAA === undefined) {
+      lVal = "N/A";
+      mVal = "N/A";
+    } else {
+      var s = mainStatusAA;
+      if (s === "100%" || s === "Release salary and F&F") {
+        lVal = "Yes";
+        mVal = "No";
+      } else if (s === "HOLD" || s === "HOLD- checking leaves taken") {
+        lVal = "No";
+
+        // extra Mid Cycle override for M ("Yes" only if not in Mid Cycle)
+        if (midMap[ecodeStr]) {
+          mVal = "No";
+        } else {
+          mVal = "Yes";
+        }
+
+      } else {
+        lVal = "N/A";
+        mVal = "N/A";
+      }
+    }
+
+    // --- N: Exit Process Complete ---
+    var nVal;
+    if (lVal === "Yes" && !recoveryMap.hasOwnProperty(ecodeStr)) {
+      nVal = "Yes";
+    } else {
+      nVal = "No";
+    }
+
+    // --- O: Exit Process Pending ---
+    var oVal;
+    if (nVal === "No" || mVal === "Yes") {
+      oVal = "Yes";
+    } else {
+      oVal = "No";
+    }
+
+    // --- P: Recovery Amount ---
+    var pVal;
+    if (recoveryMap.hasOwnProperty(ecodeStr) && recoveryMap[ecodeStr] !== "" && recoveryMap[ecodeStr] != null) {
+      pVal = recoveryMap[ecodeStr];
+    } else {
+      pVal = "N/A";
+    }
+
+    // --- R: Recovery Received? ---
+    var rVal;
+    if (pVal === "N/A") {
+      rVal = "N/A";
+    } else {
+      rVal = recPaidMap[ecodeStr] ? "Paid" : "Not Paid";
+    }
+
+    // Build row for summary sheet (A..R)
+    var outRow = [
+      ecodeStr,        // A
+      fullName,        // B
+      email,           // C
+      exitRaisedValue, // D (Date or "")
+      entity,          // E
+      lob,             // F
+      dept,            // G
+      hVal,            // H
+      iVal,            // I (Date or "")
+      jVal,            // J
+      kVal,            // K
+      lVal,            // L
+      mVal,            // M
+      nVal,            // N
+      oVal,            // O
+      pVal,            // P
+      "",              // Q - intentionally left blank
+      rVal             // R
+    ];
+
+    output.push(outRow);
+  }
+
+  if (output.length === 0) {
+    summarySheet.getRange(2, 1).setValue("No E-Codes found in Zoho Exit Dump.");
+    return;
+  }
+
+  // Write all data at once
+  summarySheet.getRange(2, 1, output.length, headers.length).setValues(output);
+
+  // ---------------------------
+  // 5) Formatting (dates, etc.)
+  // ---------------------------
+
+  var lastOutRow = output.length + 1; // including header
+
+  // Format Exit Raised on (D) and Last Working Day (I) as dd-MMM-yyyy
+  summarySheet.getRange(2, 4, output.length, 1).setNumberFormat("dd-MMM-yyyy"); // Column D
+  summarySheet.getRange(2, 9, output.length, 1).setNumberFormat("dd-MMM-yyyy"); // Column I
+
+  // Optional: format Notice Period (J) as number (no decimals)
+  summarySheet.getRange(2, 10, output.length, 1).setNumberFormat("0");
+
+  // Optional: Freeze header row
+  summarySheet.setFrozenRows(1);
+}
+
+
+/**
+ * Create a new sheet with a unique name based on baseName.
+ * Example: "Exit Data Summary and Analytics", "Exit Data Summary and Analytics (2)", etc.
+ */
+function createNewSummarySheet_(ss, baseName) {
+  var name = baseName;
+  var index = 1;
+  while (ss.getSheetByName(name)) {
+    index++;
+    name = baseName + " (" + index + ")";
+  }
+  // Insert at the end; user can reorder if desired
+  var sheet = ss.insertSheet(name);
+  return sheet;
+}
+
+/**
+ * Normalize a cell value to a Date at midnight (no time part).
+ * Returns a Date object or null if not a valid date.
+ */
+function normalizeDate_(val) {
+  if (!val) {
+    return null;
+  }
+  var d;
+  if (Object.prototype.toString.call(val) === "[object Date]") {
+    if (isNaN(val.getTime())) {
+      return null;
+    }
+    d = val;
+  } else {
+    // Try parsing if it's a string
+    d = new Date(val);
+    if (isNaN(d.getTime())) {
+      return null;
+    }
+  }
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
