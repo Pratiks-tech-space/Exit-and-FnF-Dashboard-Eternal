@@ -27,11 +27,11 @@ function generateExitDataSummary() {
   // Read columns A..CC (81 columns) from row 2 downwards
   var zohoData = zohoSheet.getRange(2, 1, zohoLastRow - 1, 81).getValues();
 
-  // Main (Tab 2) – need Ecode (Col B) and Status (Col AA)
+  // Main (Tab 2) – need Ecode (Col B) and Status (Col AC)
   var mainLastRow = mainSheet.getLastRow();
   var mainData = [];
   if (mainLastRow > 1) {
-    mainData = mainSheet.getRange(2, 1, mainLastRow - 1, 27).getValues(); // up to AA
+    mainData = mainSheet.getRange(2, 1, mainLastRow - 1, 29).getValues(); // up to AC
   }
 
   // Mid Cycle (Tab 3) – Ecode in Col A
@@ -59,11 +59,11 @@ function generateExitDataSummary() {
   // 2) Build lookup maps
   // ---------------------------
 
-  // Main map: Ecode -> statusAA
+  // Main map: Ecode -> statusAA (now Column AC)
   var mainMap = {};
   for (var i = 0; i < mainData.length; i++) {
     var ecodeMain = mainData[i][1]; // Col B (index 1)
-    var statusAA = mainData[i][26]; // Col AA (index 26 from A)
+    var statusAA = mainData[i][28]; // Col AC (index 28 from A)
     if (ecodeMain) {
       mainMap[String(ecodeMain).trim()] = String(statusAA || "").trim();
     }
@@ -118,7 +118,7 @@ function generateExitDataSummary() {
     "Exit Process Complete",            // N
     "Exit Process Pending",             // O
     "Recovery Amount",                  // P
-    "",                                 // Q (intentionally left blank)
+    "",                                 // Q
     "Recovery Received?"                // R
   ];
 
@@ -135,94 +135,94 @@ function generateExitDataSummary() {
     var row = zohoData[r];
 
     var ecode = row[2];   // Col C
-    if (!ecode) {
-      // Skip rows without e-code
-      continue;
-    }
+    if (!ecode) continue;
     var ecodeStr = String(ecode).trim();
 
-    var exitRaisedRaw = row[1];  // Col B (Exit Raised on, date+time)
-    var fullName = row[3];       // Col D
-    var email = row[4];          // Col E
-    var dept = row[8];           // Col I
-    var lob = row[9];            // Col J
-    var entity = row[10];        // Col K
-    var lastWorkingRaw = row[13]; // Col N (Last Working Day)
-    var statusCC = row[80];       // Col CC (Approved/Rejected/etc)
+    var exitRaisedRaw = row[15];  // Col P
+    var fullName = row[3];        
+    var email = row[4];           
+    var dept = row[8];            
+    var lob = row[9];             
+    var entity = row[10];         
+    var lastWorkingRaw = row[13]; 
+    var statusCC = row[80];       
 
-    // --- D: Exit Raised on (date only) ---
+    // Exit Raised Date
     var exitRaisedDate = normalizeDate_(exitRaisedRaw);
-    var exitRaisedValue = exitRaisedDate || ""; // store as Date object or blank
+    var exitRaisedValue = exitRaisedDate || "";
 
-    // --- H: Exit Accepted/Rejected/Pending/N/A ---
+    // Status (Accepted/Rejected/Pending)
     var hVal;
     var statusStr = String(statusCC || "").trim();
-    if (statusStr === "Approved") {
-      hVal = "Accepted";
-    } else if (statusStr === "Rejected") {
-      hVal = "Rejected";
-    } else if (statusStr === "") {
-      hVal = "Pending";
-    } else {
-      hVal = "N/A";
-    }
+    if (statusStr === "Approved") hVal = "Accepted";
+    else if (statusStr === "Rejected") hVal = "Rejected";
+    else if (statusStr === "") hVal = "Pending";
+    else hVal = "N/A";
 
-    // --- I: Last Working Day ---
+    // LWD
     var lastWorkingDate = normalizeDate_(lastWorkingRaw);
     var iVal = lastWorkingDate || "";
 
-    // --- J: Notice Period (inclusive days) ---
+    // Notice Period
     var jVal;
     if (exitRaisedDate && lastWorkingDate) {
-      var diffMs = lastWorkingDate.getTime() - exitRaisedDate.getTime();
-      var diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1; // inclusive
+      var diffMs = lastWorkingDate - exitRaisedDate;
+      var diffDays = Math.round(diffMs / 86400000) + 1;
       jVal = diffDays;
+    } else jVal = "N/A";
+
+    // -----------------------------------------------------
+    // UPDATED LOGIC — FnF Cycle Started?  (Column K)
+    // -----------------------------------------------------
+    var kVal;
+    if ((lastWorkingDate && statusStr === "Approved") || mainMap.hasOwnProperty(ecodeStr)) {
+      kVal = "Yes";
     } else {
-      jVal = "N/A";
+      kVal = "No";
     }
 
-    // --- K: FnF Cycle Started? ---
-    var kVal = lastWorkingDate ? "Yes" : "No";
-
-    // --- L & M: FnF Released & Cleared / FnF on Hold ---
-    var mainStatusAA = mainMap[ecodeStr]; // may be undefined
-
-    var lVal; // FnF Released & Cleared
-    var mVal; // FnF on Hold (Asset Submission Due)
+    // -----------------------------------------------------
+    // UPDATED LOGIC — FnF Released & Cleared (Column L)
+    // -----------------------------------------------------
+    var mainStatusAA = mainMap[ecodeStr];
+    var lVal;
 
     if (mainStatusAA === undefined) {
-      lVal = "N/A";
-      mVal = "N/A";
+      lVal = "Not in FnF Sheet";
+    } else if (mainStatusAA === "100%" || mainStatusAA === "Release salary and F&F") {
+      lVal = "Yes";
+    } else if (mainStatusAA === "HOLD" || mainStatusAA === "HOLD- checking leaves taken") {
+      lVal = "No";
     } else {
-      var s = mainStatusAA;
-      if (s === "100%" || s === "Release salary and F&F") {
-        lVal = "Yes";
-        mVal = "No";
-      } else if (s === "HOLD" || s === "HOLD- checking leaves taken") {
-        lVal = "No";
-
-        // extra Mid Cycle override for M ("Yes" only if not in Mid Cycle)
-        if (midMap[ecodeStr]) {
-          mVal = "No";
-        } else {
-          mVal = "Yes";
-        }
-
-      } else {
-        lVal = "N/A";
-        mVal = "N/A";
-      }
+      lVal = "Error";
     }
 
-    // --- N: Exit Process Complete ---
+    // -----------------------------------------------------
+    // UPDATED LOGIC — FnF On Hold (Column M)
+    // -----------------------------------------------------
+    var mVal;
+
+    if (mainStatusAA === undefined) {
+      mVal = "Not in FnF Sheet";
+    } else if (mainStatusAA === "100%" || mainStatusAA === "Release salary and F&F") {
+      mVal = "No";
+    } else if (mainStatusAA === "HOLD" || mainStatusAA === "HOLD- checking leaves taken") {
+      if (midMap[ecodeStr]) {
+        mVal = "No";
+      } else {
+        mVal = "Yes";
+      }
+    } else {
+      mVal = "Error";
+    }
+
+    // Exit Process Complete
     var nVal;
     if (lVal === "Yes" && !recoveryMap.hasOwnProperty(ecodeStr)) {
       nVal = "Yes";
-    } else {
-      nVal = "No";
-    }
+    } else nVal = "No";
 
-    // --- O: Exit Process Pending ---
+    // Exit Process Pending
     var oVal;
     if (nVal === "No" || mVal === "Yes") {
       oVal = "Yes";
@@ -230,42 +230,20 @@ function generateExitDataSummary() {
       oVal = "No";
     }
 
-    // --- P: Recovery Amount ---
+    // Recovery Amount
     var pVal;
     if (recoveryMap.hasOwnProperty(ecodeStr) && recoveryMap[ecodeStr] !== "" && recoveryMap[ecodeStr] != null) {
       pVal = recoveryMap[ecodeStr];
-    } else {
-      pVal = "N/A";
-    }
+    } else pVal = "N/A";
 
-    // --- R: Recovery Received? ---
+    // Recovery Received?
     var rVal;
-    if (pVal === "N/A") {
-      rVal = "N/A";
-    } else {
-      rVal = recPaidMap[ecodeStr] ? "Paid" : "Not Paid";
-    }
+    if (pVal === "N/A") rVal = "N/A";
+    else rVal = recPaidMap[ecodeStr] ? "Paid" : "Not Paid";
 
-    // Build row for summary sheet (A..R)
     var outRow = [
-      ecodeStr,        // A
-      fullName,        // B
-      email,           // C
-      exitRaisedValue, // D (Date or "")
-      entity,          // E
-      lob,             // F
-      dept,            // G
-      hVal,            // H
-      iVal,            // I (Date or "")
-      jVal,            // J
-      kVal,            // K
-      lVal,            // L
-      mVal,            // M
-      nVal,            // N
-      oVal,            // O
-      pVal,            // P
-      "",              // Q - intentionally left blank
-      rVal             // R
+      ecodeStr, fullName, email, exitRaisedValue, entity, lob, dept,
+      hVal, iVal, jVal, kVal, lVal, mVal, nVal, oVal, pVal, "", rVal
     ];
 
     output.push(outRow);
@@ -276,30 +254,19 @@ function generateExitDataSummary() {
     return;
   }
 
-  // Write all data at once
   summarySheet.getRange(2, 1, output.length, headers.length).setValues(output);
 
-  // ---------------------------
-  // 5) Formatting (dates, etc.)
-  // ---------------------------
+  var lastOutRow = output.length + 1;
 
-  var lastOutRow = output.length + 1; // including header
-
-  // Format Exit Raised on (D) and Last Working Day (I) as dd-MMM-yyyy
-  summarySheet.getRange(2, 4, output.length, 1).setNumberFormat("dd-MMM-yyyy"); // Column D
-  summarySheet.getRange(2, 9, output.length, 1).setNumberFormat("dd-MMM-yyyy"); // Column I
-
-  // Optional: format Notice Period (J) as number (no decimals)
+  summarySheet.getRange(2, 4, output.length, 1).setNumberFormat("dd-MMM-yyyy");
+  summarySheet.getRange(2, 9, output.length, 1).setNumberFormat("dd-MMM-yyyy");
   summarySheet.getRange(2, 10, output.length, 1).setNumberFormat("0");
-
-  // Optional: Freeze header row
   summarySheet.setFrozenRows(1);
 }
 
 
 /**
  * Create a new sheet with a unique name based on baseName.
- * Example: "Exit Data Summary and Analytics", "Exit Data Summary and Analytics (2)", etc.
  */
 function createNewSummarySheet_(ss, baseName) {
   var name = baseName;
@@ -308,31 +275,23 @@ function createNewSummarySheet_(ss, baseName) {
     index++;
     name = baseName + " (" + index + ")";
   }
-  // Insert at the end; user can reorder if desired
   var sheet = ss.insertSheet(name);
   return sheet;
 }
 
+
 /**
- * Normalize a cell value to a Date at midnight (no time part).
- * Returns a Date object or null if not a valid date.
+ * Normalize a cell value to a Date.
  */
 function normalizeDate_(val) {
-  if (!val) {
-    return null;
-  }
+  if (!val) return null;
   var d;
   if (Object.prototype.toString.call(val) === "[object Date]") {
-    if (isNaN(val.getTime())) {
-      return null;
-    }
+    if (isNaN(val.getTime())) return null;
     d = val;
   } else {
-    // Try parsing if it's a string
     d = new Date(val);
-    if (isNaN(d.getTime())) {
-      return null;
-    }
+    if (isNaN(d.getTime())) return null;
   }
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
